@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
 import type { 
-  Family, Profile, GroceryItem, Category 
+  Family, Profile, GroceryItem, Category, CustomList 
 } from '../types';
 import { api } from '../api';
 import { 
@@ -56,6 +56,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
 
   // Partition state (family vs personal)
   const [listTab, setListTab] = useState<'family' | 'personal'>('family');
+
+  // Custom Lists state
+  const [customLists, setCustomLists] = useState<CustomList[]>([]);
+  const [activeListId, setActiveListId] = useState<string | null>(null); // null = Main List
+  const [isCreatingList, setIsCreatingList] = useState(false);
+  const [newListName, setNewListName] = useState('');
 
   // Filter states
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'completed'>('all');
@@ -113,15 +119,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     }
   }, []);
 
+  // Fetch Custom Lists
+  const fetchCustomLists = useCallback(async () => {
+    try {
+      const data = await api.getCustomLists();
+      setCustomLists(data || []);
+    } catch (err: any) {
+      console.error('Error fetching custom lists:', err);
+    }
+  }, []);
+
   // On mount, load data & set up real-time listener
   useEffect(() => {
     if (profile.family_id) {
       fetchFamilyDetails();
     }
     fetchItems();
+    fetchCustomLists();
 
-    // Realtime subscription
-    const channel = supabase
+    // Realtime subscription for items
+    const channelItems = supabase
       .channel('grocery-changes-all')
       .on(
         'postgres_changes',
@@ -136,10 +153,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
       )
       .subscribe();
 
+    // Realtime subscription for custom lists
+    const channelLists = supabase
+      .channel('custom-lists-changes-all')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'custom_lists',
+        },
+        () => {
+          fetchCustomLists();
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(channelItems);
+      supabase.removeChannel(channelLists);
     };
-  }, [profile.family_id, fetchFamilyDetails, fetchItems]);
+  }, [profile.family_id, fetchFamilyDetails, fetchItems, fetchCustomLists]);
 
   // Copy family invite code
   const copyInviteCode = () => {
@@ -149,6 +183,52 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     setTimeout(() => {
       setCopiedCode(false);
     }, 2000);
+  };
+
+  // Create custom named list
+  const handleCreateList = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newListName.trim()) return;
+
+    const isPersonal = listTab === 'personal';
+    if (!isPersonal && !profile.family_id) return;
+
+    setActionLoading('create-list');
+    try {
+      const newList = await api.createCustomList(
+        newListName.trim(),
+        isPersonal,
+        isPersonal ? null : profile.family_id
+      );
+      setCustomLists(prev => [...prev, newList]);
+      setActiveListId(newList.id);
+      setNewListName('');
+      setIsCreatingList(false);
+    } catch (err: any) {
+      console.error('Error creating custom list:', err);
+      setError(err.message || 'Failed to create new list.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Delete custom list
+  const handleDeleteList = async (listId: string, listName: string) => {
+    if (!window.confirm(`Are you sure you want to delete "${listName}" and all its items?`)) return;
+
+    setActionLoading(`delete-list-${listId}`);
+    try {
+      await api.deleteCustomList(listId);
+      setCustomLists(prev => prev.filter(l => l.id !== listId));
+      if (activeListId === listId) {
+        setActiveListId(null);
+      }
+    } catch (err: any) {
+      console.error('Error deleting list:', err);
+      setError(err.message || 'Failed to delete list.');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   // Add a new grocery item
@@ -167,6 +247,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     try {
       await api.createItem({
         family_id: isPersonal ? null : profile.family_id,
+        list_id: activeListId,
         is_personal: isPersonal,
         name: name.trim(),
         quantity: qty.trim(),
@@ -218,12 +299,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
   // Clear completed items
   const handleClearCompleted = async () => {
     const isPersonal = listTab === 'personal';
-    const listLabel = isPersonal ? 'personal' : 'family';
-    if (!window.confirm(`Are you sure you want to delete all completed ${listLabel} items?`)) return;
+    const activeCustomList = customLists.find(l => l.id === activeListId);
+    const listLabel = activeCustomList ? activeCustomList.name : (isPersonal ? 'personal main' : 'family main');
+    if (!window.confirm(`Are you sure you want to delete all completed items in "${listLabel}"?`)) return;
     if (!isPersonal && !profile.family_id) return;
     setActionLoading('clear-completed');
     try {
-      await api.clearCompleted(profile.family_id, isPersonal);
+      await api.clearCompleted(profile.family_id, isPersonal, activeListId);
     } catch (err: any) {
       console.error('Error clearing completed items:', err);
       setError('Failed to clear completed items.');
@@ -297,12 +379,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     window.open(whatsappUrl, '_blank');
   };
 
-  // Active list items based on selected tab (Family vs Personal)
-  const activeTabItems = items.filter(item => {
+  // 1. Partition Items (Family vs Personal)
+  const partitionItems = items.filter(item => {
     if (listTab === 'personal') {
       return item.is_personal === true;
     } else {
       return !item.is_personal;
+    }
+  });
+
+  // 2. Active List Items (filter by active custom list or main list)
+  const activeTabItems = partitionItems.filter(item => {
+    if (activeListId) {
+      return item.list_id === activeListId;
+    } else {
+      return !item.list_id;
     }
   });
 
@@ -394,7 +485,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
             ...styles.partitionTab,
             ...(listTab === 'family' ? styles.partitionTabActive : {})
           }}
-          onClick={() => setListTab('family')}
+          onClick={() => {
+            setListTab('family');
+            setActiveListId(null);
+            setIsCreatingList(false);
+          }}
         >
           <Users size={18} />
           <span>Family List</span>
@@ -408,7 +503,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
             ...styles.partitionTab,
             ...(listTab === 'personal' ? styles.partitionTabActive : {})
           }}
-          onClick={() => setListTab('personal')}
+          onClick={() => {
+            setListTab('personal');
+            setActiveListId(null);
+            setIsCreatingList(false);
+          }}
         >
           <User size={18} />
           <span>Personal List</span>
@@ -416,6 +515,89 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
             {items.filter(i => i.is_personal).length}
           </span>
         </button>
+      </div>
+
+      {/* 1.6. Sub-List Selector Bar (Named Lists) */}
+      <div style={styles.subListBar}>
+        <div style={styles.subListPills}>
+          {/* Main List Pill */}
+          <button
+            style={{
+              ...styles.subListPill,
+              ...(activeListId === null ? styles.subListPillActive : {})
+            }}
+            onClick={() => setActiveListId(null)}
+          >
+            📋 Main List ({partitionItems.filter(i => !i.list_id).length})
+          </button>
+
+          {/* Custom Named Lists */}
+          {customLists
+            .filter(l => (listTab === 'personal' ? l.is_personal : !l.is_personal))
+            .map(list => {
+              const count = partitionItems.filter(i => i.list_id === list.id).length;
+              const isActive = activeListId === list.id;
+              return (
+                <div key={list.id} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  <button
+                    style={{
+                      ...styles.subListPill,
+                      ...(isActive ? styles.subListPillActive : {}),
+                      paddingRight: '6px'
+                    }}
+                    onClick={() => setActiveListId(list.id)}
+                  >
+                    📑 {list.name} ({count})
+                  </button>
+                  <button
+                    style={styles.deleteListBtn}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteList(list.id, list.name);
+                    }}
+                    title="Delete custom list"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              );
+            })}
+
+          {/* + New List Form / Button */}
+          {isCreatingList ? (
+            <form onSubmit={handleCreateList} style={styles.inlineCreateListForm}>
+              <input
+                type="text"
+                placeholder="List Name (e.g. Party Snacks)"
+                value={newListName}
+                onChange={(e) => setNewListName(e.target.value)}
+                style={styles.inlineCreateInput}
+                autoFocus
+                required
+              />
+              <button type="submit" style={styles.inlineSaveBtn} disabled={actionLoading === 'create-list'}>
+                Save
+              </button>
+              <button
+                type="button"
+                style={styles.inlineCancelBtn}
+                onClick={() => {
+                  setIsCreatingList(false);
+                  setNewListName('');
+                }}
+              >
+                <X size={14} />
+              </button>
+            </form>
+          ) : (
+            <button
+              style={styles.newListPillBtn}
+              onClick={() => setIsCreatingList(true)}
+            >
+              <Plus size={14} /> New List
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 2. Grid Content */}
@@ -1192,6 +1374,98 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '2px 8px',
     fontSize: '0.8rem',
     fontWeight: '600',
+  },
+  subListBar: {
+    marginBottom: '24px',
+    marginTop: '-8px',
+  },
+  subListPills: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    flexWrap: 'wrap',
+  },
+  subListPill: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 14px',
+    borderRadius: '10px',
+    background: 'rgba(255, 255, 255, 0.03)',
+    border: '1px solid rgba(255, 255, 255, 0.08)',
+    color: '#cbd5e1',
+    fontSize: '0.85rem',
+    fontWeight: '500',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  subListPillActive: {
+    background: 'rgba(45, 212, 191, 0.12)',
+    borderColor: 'rgba(45, 212, 191, 0.4)',
+    color: '#2dd4bf',
+    fontWeight: '600',
+  },
+  deleteListBtn: {
+    background: 'transparent',
+    border: 'none',
+    color: '#64748b',
+    cursor: 'pointer',
+    padding: '4px',
+    borderRadius: '4px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: '-4px',
+    marginRight: '4px',
+    transition: 'color 0.2s ease',
+  },
+  newListPillBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '8px 14px',
+    borderRadius: '10px',
+    background: 'transparent',
+    border: '1px dashed rgba(255, 255, 255, 0.2)',
+    color: '#94a3b8',
+    fontSize: '0.85rem',
+    fontWeight: '500',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  inlineCreateListForm: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  inlineCreateInput: {
+    padding: '6px 12px',
+    fontSize: '0.85rem',
+    background: 'rgba(15, 23, 42, 0.8)',
+    border: '1px solid rgba(45, 212, 191, 0.5)',
+    borderRadius: '8px',
+    color: '#f8fafc',
+    outline: 'none',
+    width: '180px',
+  },
+  inlineSaveBtn: {
+    padding: '6px 12px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
+    background: '#10b981',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+  },
+  inlineCancelBtn: {
+    padding: '4px',
+    background: 'transparent',
+    border: 'none',
+    color: '#94a3b8',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
   },
 };
 // Add custom keyframes spin animation using global stylesheet since in React inline styles it's tricky

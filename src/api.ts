@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import type { Family, Profile, GroceryItem } from './types';
+import type { Family, Profile, GroceryItem, CustomList } from './types';
 
 // Utility to generate unique family join code (e.g., FAM-AB12CD)
 function generateFamilyCode(): string {
@@ -203,6 +203,56 @@ export const api = {
     return data;
   },
 
+  // Custom Lists
+  async getCustomLists(): Promise<CustomList[]> {
+    const { data, error } = await supabase
+      .from('custom_lists')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      // If table doesn't exist yet, return empty list gracefully
+      console.warn('Could not fetch custom lists:', error.message);
+      return [];
+    }
+    return data || [];
+  },
+
+  async createCustomList(name: string, is_personal: boolean, family_id?: string | null): Promise<CustomList> {
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      throw new Error('User not authenticated.');
+    }
+
+    const { data, error } = await supabase
+      .from('custom_lists')
+      .insert({
+        name: name.trim(),
+        is_personal: is_personal,
+        family_id: is_personal ? null : (family_id || null),
+        created_by: user.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw new Error(error.message || 'Failed to create list.');
+    }
+    return data;
+  },
+
+  async deleteCustomList(listId: string): Promise<{ success: boolean }> {
+    const { error } = await supabase
+      .from('custom_lists')
+      .delete()
+      .eq('id', listId);
+
+    if (error) {
+      throw new Error(error.message || 'Failed to delete list.');
+    }
+    return { success: true };
+  },
+
   // Grocery Items
   async getItems(): Promise<GroceryItem[]> {
     const { data, error } = await supabase
@@ -222,6 +272,7 @@ export const api = {
     quantity: string;
     category: string;
     family_id?: string | null;
+    list_id?: string | null;
     is_personal?: boolean;
     added_by_name: string;
   }): Promise<GroceryItem> {
@@ -232,6 +283,7 @@ export const api = {
       .from('grocery_items')
       .insert({
         family_id: isPersonal ? null : (item.family_id || null),
+        list_id: item.list_id || null,
         is_personal: isPersonal,
         name: item.name.trim(),
         quantity: item.quantity.trim(),
@@ -275,15 +327,17 @@ export const api = {
     return { success: true };
   },
 
-  async clearCompleted(familyId?: string | null, isPersonal?: boolean): Promise<{ success: boolean }> {
+  async clearCompleted(familyId?: string | null, isPersonal?: boolean, listId?: string | null): Promise<{ success: boolean }> {
     const { data: { user } } = await supabase.auth.getUser();
 
     let query = supabase.from('grocery_items').delete().eq('checked', true);
 
-    if (isPersonal) {
-      query = query.eq('is_personal', true).eq('added_by', user?.id || '');
+    if (listId) {
+      query = query.eq('list_id', listId);
+    } else if (isPersonal) {
+      query = query.eq('is_personal', true).is('list_id', null).eq('added_by', user?.id || '');
     } else if (familyId) {
-      query = query.eq('family_id', familyId).eq('is_personal', false);
+      query = query.eq('family_id', familyId).eq('is_personal', false).is('list_id', null);
     }
 
     const { error } = await query;

@@ -15,9 +15,19 @@ export interface Profile {
   updated_at: string;
 }
 
+export interface CustomList {
+  id: string;
+  name: string;
+  is_personal: boolean;
+  family_id?: string | null;
+  created_by: string;
+  created_at: string;
+}
+
 export interface GroceryItem {
   id: string;
   family_id?: string | null;
+  list_id?: string | null;
   is_personal?: boolean;
   name: string;
   quantity: string;

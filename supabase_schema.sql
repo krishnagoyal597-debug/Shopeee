@@ -17,10 +17,21 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- Create Custom Lists Table
+CREATE TABLE IF NOT EXISTS public.custom_lists (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    is_personal BOOLEAN NOT NULL DEFAULT FALSE,
+    family_id UUID REFERENCES public.families(id) ON DELETE CASCADE,
+    created_by UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
 -- Create Grocery Items Table
 CREATE TABLE IF NOT EXISTS public.grocery_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     family_id UUID REFERENCES public.families(id) ON DELETE CASCADE,
+    list_id UUID REFERENCES public.custom_lists(id) ON DELETE CASCADE,
     is_personal BOOLEAN NOT NULL DEFAULT FALSE,
     name TEXT NOT NULL,
     quantity TEXT NOT NULL DEFAULT '1',
@@ -34,7 +45,27 @@ CREATE TABLE IF NOT EXISTS public.grocery_items (
 -- Enable Row Level Security (RLS)
 ALTER TABLE public.families ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.custom_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.grocery_items ENABLE ROW LEVEL SECURITY;
+
+-- Custom Lists RLS Policies
+CREATE POLICY "Allow select for custom lists" 
+    ON public.custom_lists FOR SELECT 
+    TO authenticated 
+    USING (
+        (is_personal = true AND created_by = auth.uid()) OR
+        (is_personal = false AND family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid()))
+    );
+
+CREATE POLICY "Allow insert for custom lists" 
+    ON public.custom_lists FOR INSERT 
+    TO authenticated 
+    WITH CHECK (created_by = auth.uid());
+
+CREATE POLICY "Allow delete for custom lists" 
+    ON public.custom_lists FOR DELETE 
+    TO authenticated 
+    USING (created_by = auth.uid());
 
 -- Families RLS Policies
 CREATE POLICY "Allow read access to all authenticated users" 
