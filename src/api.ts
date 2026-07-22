@@ -236,6 +236,9 @@ export const api = {
       .single();
 
     if (error) {
+      if (error.message?.includes('custom_lists') || error.message?.includes('schema cache') || error.code === 'PGRST204' || error.code === '42P01') {
+        throw new Error("Table 'public.custom_lists' does not exist in your Supabase database yet. Please run the SQL snippet in your Supabase SQL Editor.");
+      }
       throw new Error(error.message || 'Failed to create list.');
     }
     return data;
@@ -279,21 +282,38 @@ export const api = {
     const { data: { user } } = await supabase.auth.getUser();
 
     const isPersonal = item.is_personal ?? false;
-    const { data, error } = await supabase
+    const payload: any = {
+      family_id: isPersonal ? null : (item.family_id || null),
+      is_personal: isPersonal,
+      name: item.name.trim(),
+      quantity: item.quantity.trim(),
+      category: item.category,
+      added_by: user?.id || null,
+      added_by_name: item.added_by_name,
+      checked: false,
+    };
+
+    if (item.list_id) {
+      payload.list_id = item.list_id;
+    }
+
+    let { data, error } = await supabase
       .from('grocery_items')
-      .insert({
-        family_id: isPersonal ? null : (item.family_id || null),
-        list_id: item.list_id || null,
-        is_personal: isPersonal,
-        name: item.name.trim(),
-        quantity: item.quantity.trim(),
-        category: item.category,
-        added_by: user?.id || null,
-        added_by_name: item.added_by_name,
-        checked: false,
-      })
+      .insert(payload)
       .select()
       .single();
+
+    if (error && (error.message?.includes('list_id') || error.code === 'PGRST204')) {
+      // Fallback: retry without list_id if database column hasn't been created yet
+      delete payload.list_id;
+      const retry = await supabase
+        .from('grocery_items')
+        .insert(payload)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
 
     if (error) {
       throw new Error(error.message || 'Failed to add grocery item.');
