@@ -17,6 +17,7 @@ function App() {
     try {
       const data = await api.getProfile();
       setProfile(data);
+      setLoading(false);
     } catch (err: any) {
       console.warn('Profile not found, retrying in 1s...', err);
       // Wait a moment for trigger function in Supabase DB to complete profile insert
@@ -30,9 +31,6 @@ function App() {
           setLoading(false);
         }
       }, 1000);
-      return;
-    } finally {
-      setLoading(false);
     }
   };
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../supabaseClient';
 import type { 
   Family, Profile, GroceryItem, Category 
@@ -67,7 +67,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
   const [updatingPhone, setUpdatingPhone] = useState(false);
 
   // Fetch Family Details
-  const fetchFamilyDetails = async () => {
+  const fetchFamilyDetails = useCallback(async () => {
     if (!profile.family_id) return;
     try {
       const data = await api.getFamily(profile.family_id);
@@ -77,7 +77,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
       console.error('Error fetching family details:', err);
       setError('Could not load family group details.');
     }
-  };
+  }, [profile.family_id]);
 
   const handleUpdatePhone = async () => {
     if (!family) return;
@@ -98,7 +98,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
   };
 
   // Fetch Grocery Items
-  const fetchItems = async () => {
+  const fetchItems = useCallback(async () => {
     if (!profile.family_id) return;
     try {
       const data = await api.getItems();
@@ -109,7 +109,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [profile.family_id]);
 
   // On mount, load data & set up real-time listener
   useEffect(() => {
@@ -138,7 +138,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
         supabase.removeChannel(channel);
       };
     }
-  }, [profile.family_id]);
+  }, [profile.family_id, fetchFamilyDetails, fetchItems]);
 
   // Copy family invite code
   const copyInviteCode = () => {
