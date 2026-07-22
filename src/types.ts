@@ -17,7 +17,8 @@ export interface Profile {
 
 export interface GroceryItem {
   id: string;
-  family_id: string;
+  family_id?: string | null;
+  is_personal?: boolean;
   name: string;
   quantity: string;
   added_by: string | null;

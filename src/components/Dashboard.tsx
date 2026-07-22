@@ -7,7 +7,7 @@ import { api } from '../api';
 import { 
   Plus, Check, Trash2, Send, Copy, 
   RefreshCw, LogOut, ShoppingBasket, ShoppingBag, 
-  ListTodo, User, ShieldAlert, Pencil, X
+  ListTodo, User, Users, ShieldAlert, Pencil, X
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -54,6 +54,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
   const [qtyUnit, setQtyUnit] = useState('kg');
   const [itemCategory, setItemCategory] = useState<Category>('Vegetables');
 
+  // Partition state (family vs personal)
+  const [listTab, setListTab] = useState<'family' | 'personal'>('family');
+
   // Filter states
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'completed'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -99,7 +102,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
 
   // Fetch Grocery Items
   const fetchItems = useCallback(async () => {
-    if (!profile.family_id) return;
     try {
       const data = await api.getItems();
       setItems(data || []);
@@ -109,35 +111,34 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     } finally {
       setLoading(false);
     }
-  }, [profile.family_id]);
+  }, []);
 
   // On mount, load data & set up real-time listener
   useEffect(() => {
     if (profile.family_id) {
       fetchFamilyDetails();
-      fetchItems();
-
-      // Realtime subscription
-      const channel = supabase
-        .channel(`grocery-changes-${profile.family_id}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'grocery_items',
-            filter: `family_id=eq.${profile.family_id}`,
-          },
-          () => {
-            fetchItems();
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
     }
+    fetchItems();
+
+    // Realtime subscription
+    const channel = supabase
+      .channel('grocery-changes-all')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'grocery_items',
+        },
+        () => {
+          fetchItems();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [profile.family_id, fetchFamilyDetails, fetchItems]);
 
   // Copy family invite code
@@ -159,12 +160,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     const cat = catOverride || itemCategory;
 
     if (!name.trim()) return;
-    if (!profile.family_id) return;
+    const isPersonal = listTab === 'personal';
+    if (!isPersonal && !profile.family_id) return;
 
     setActionLoading('add');
     try {
       await api.createItem({
-        family_id: profile.family_id,
+        family_id: isPersonal ? null : profile.family_id,
+        is_personal: isPersonal,
         name: name.trim(),
         quantity: qty.trim(),
         category: cat,
@@ -214,11 +217,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
 
   // Clear completed items
   const handleClearCompleted = async () => {
-    if (!window.confirm('Are you sure you want to delete all completed items?')) return;
-    if (!profile.family_id) return;
+    const isPersonal = listTab === 'personal';
+    const listLabel = isPersonal ? 'personal' : 'family';
+    if (!window.confirm(`Are you sure you want to delete all completed ${listLabel} items?`)) return;
+    if (!isPersonal && !profile.family_id) return;
     setActionLoading('clear-completed');
     try {
-      await api.clearCompleted(profile.family_id);
+      await api.clearCompleted(profile.family_id, isPersonal);
     } catch (err: any) {
       console.error('Error clearing completed items:', err);
       setError('Failed to clear completed items.');
@@ -292,8 +297,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     window.open(whatsappUrl, '_blank');
   };
 
+  // Active list items based on selected tab (Family vs Personal)
+  const activeTabItems = items.filter(item => {
+    if (listTab === 'personal') {
+      return item.is_personal === true;
+    } else {
+      return !item.is_personal;
+    }
+  });
+
   // Filter & Group calculations
-  const filteredItems = items.filter(item => {
+  const filteredItems = activeTabItems.filter(item => {
     const matchesStatus = 
       statusFilter === 'all' ? true :
       statusFilter === 'pending' ? !item.checked :
@@ -306,9 +320,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
     return matchesStatus && matchesCategory;
   });
 
-  const pendingCount = items.filter(i => !i.checked).length;
-  const completedCount = items.filter(i => i.checked).length;
-  const totalCount = items.length;
+  const pendingCount = activeTabItems.filter(i => !i.checked).length;
+  const completedCount = activeTabItems.filter(i => i.checked).length;
+  const totalCount = activeTabItems.length;
 
   const getCategoryBadgeClass = (category: string) => {
     switch (category) {
@@ -373,6 +387,37 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
         </div>
       )}
 
+      {/* 1.5. Partition / Tab Switcher Bar */}
+      <div style={styles.partitionContainer} className="glass-card">
+        <button
+          style={{
+            ...styles.partitionTab,
+            ...(listTab === 'family' ? styles.partitionTabActive : {})
+          }}
+          onClick={() => setListTab('family')}
+        >
+          <Users size={18} />
+          <span>Family List</span>
+          <span style={styles.partitionBadge}>
+            {items.filter(i => !i.is_personal).length}
+          </span>
+        </button>
+
+        <button
+          style={{
+            ...styles.partitionTab,
+            ...(listTab === 'personal' ? styles.partitionTabActive : {})
+          }}
+          onClick={() => setListTab('personal')}
+        >
+          <User size={18} />
+          <span>Personal List</span>
+          <span style={styles.partitionBadge}>
+            {items.filter(i => i.is_personal).length}
+          </span>
+        </button>
+      </div>
+
       {/* 2. Grid Content */}
       <div style={styles.grid}>
         
@@ -400,7 +445,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
 
           {/* B. Add Item Form */}
           <div className="glass-card">
-            <h3 style={styles.sectionTitle}>Add Grocery Item</h3>
+            <h3 style={styles.sectionTitle}>Add {listTab === 'family' ? 'Family' : 'Personal'} Grocery Item</h3>
             <form onSubmit={(e) => handleAddItem(e)} style={styles.form}>
               <div style={styles.formGroup}>
                 <label style={styles.label}>Item Name</label>
@@ -455,11 +500,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ profile, onLogout }) => {
               <button 
                 type="submit" 
                 className="btn-primary" 
-                style={styles.addButton}
+                style={styles.addBtn}
                 disabled={actionLoading === 'add'}
               >
-                <Plus size={18} />
-                {actionLoading === 'add' ? 'Adding...' : 'Add to List'}
+                {actionLoading === 'add' ? (
+                  <RefreshCw size={18} className="animate-spin" />
+                ) : (
+                  <Plus size={18} />
+                )}
+                Add to {listTab === 'family' ? 'Family' : 'Personal'} List
               </button>
             </form>
           </div>
@@ -1106,6 +1155,43 @@ const styles: Record<string, React.CSSProperties> = {
   clearBtn: {
     padding: '8px 16px',
     fontSize: '0.85rem',
+  },
+  partitionContainer: {
+    display: 'flex',
+    gap: '12px',
+    margin: '20px 0',
+    padding: '6px',
+    borderRadius: '16px',
+  },
+  partitionTab: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '10px',
+    padding: '14px 20px',
+    borderRadius: '12px',
+    border: '1px solid transparent',
+    background: 'transparent',
+    color: '#94a3b8',
+    fontSize: '1rem',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+  },
+  partitionTabActive: {
+    background: 'linear-gradient(135deg, rgba(45, 212, 191, 0.15) 0%, rgba(59, 130, 246, 0.15) 100%)',
+    color: '#2dd4bf',
+    border: '1px solid rgba(45, 212, 191, 0.3)',
+    boxShadow: '0 4px 15px rgba(45, 212, 191, 0.1)',
+  },
+  partitionBadge: {
+    background: 'rgba(255, 255, 255, 0.1)',
+    color: '#cbd5e1',
+    borderRadius: '12px',
+    padding: '2px 8px',
+    fontSize: '0.8rem',
+    fontWeight: '600',
   },
 };
 // Add custom keyframes spin animation using global stylesheet since in React inline styles it's tricky

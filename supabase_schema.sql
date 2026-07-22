@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 -- Create Grocery Items Table
 CREATE TABLE IF NOT EXISTS public.grocery_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    family_id UUID REFERENCES public.families(id) ON DELETE CASCADE NOT NULL,
+    family_id UUID REFERENCES public.families(id) ON DELETE CASCADE,
+    is_personal BOOLEAN NOT NULL DEFAULT FALSE,
     name TEXT NOT NULL,
     quantity TEXT NOT NULL DEFAULT '1',
     added_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
@@ -68,32 +69,36 @@ CREATE POLICY "Allow profile creator to insert own profile"
     WITH CHECK (id = auth.uid());
 
 -- Grocery Items RLS Policies
-CREATE POLICY "Allow select for family members" 
+CREATE POLICY "Allow select for family or personal items" 
     ON public.grocery_items FOR SELECT 
     TO authenticated 
     USING (
-        family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid())
+        (is_personal = true AND added_by = auth.uid()) OR
+        (is_personal = false AND family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid()))
     );
 
-CREATE POLICY "Allow insert for family members" 
+CREATE POLICY "Allow insert for family or personal items" 
     ON public.grocery_items FOR INSERT 
     TO authenticated 
     WITH CHECK (
-        family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid())
+        (is_personal = true AND added_by = auth.uid()) OR
+        (is_personal = false AND family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid()))
     );
 
-CREATE POLICY "Allow update for family members" 
+CREATE POLICY "Allow update for family or personal items" 
     ON public.grocery_items FOR UPDATE 
     TO authenticated 
     USING (
-        family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid())
+        (is_personal = true AND added_by = auth.uid()) OR
+        (is_personal = false AND family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid()))
     );
 
-CREATE POLICY "Allow delete for family members" 
+CREATE POLICY "Allow delete for family or personal items" 
     ON public.grocery_items FOR DELETE 
     TO authenticated 
     USING (
-        family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid())
+        (is_personal = true AND added_by = auth.uid()) OR
+        (is_personal = false AND family_id = (SELECT family_id FROM public.profiles WHERE id = auth.uid()))
     );
 
 -- Trigger to Automatically Create Profile for New Auth Users

@@ -221,15 +221,18 @@ export const api = {
     name: string;
     quantity: string;
     category: string;
-    family_id: string;
+    family_id?: string | null;
+    is_personal?: boolean;
     added_by_name: string;
   }): Promise<GroceryItem> {
     const { data: { user } } = await supabase.auth.getUser();
 
+    const isPersonal = item.is_personal ?? false;
     const { data, error } = await supabase
       .from('grocery_items')
       .insert({
-        family_id: item.family_id,
+        family_id: isPersonal ? null : (item.family_id || null),
+        is_personal: isPersonal,
         name: item.name.trim(),
         quantity: item.quantity.trim(),
         category: item.category,
@@ -272,12 +275,18 @@ export const api = {
     return { success: true };
   },
 
-  async clearCompleted(familyId: string): Promise<{ success: boolean }> {
-    const { error } = await supabase
-      .from('grocery_items')
-      .delete()
-      .eq('family_id', familyId)
-      .eq('checked', true);
+  async clearCompleted(familyId?: string | null, isPersonal?: boolean): Promise<{ success: boolean }> {
+    const { data: { user } } = await supabase.auth.getUser();
+
+    let query = supabase.from('grocery_items').delete().eq('checked', true);
+
+    if (isPersonal) {
+      query = query.eq('is_personal', true).eq('added_by', user?.id || '');
+    } else if (familyId) {
+      query = query.eq('family_id', familyId).eq('is_personal', false);
+    }
+
+    const { error } = await query;
 
     if (error) {
       throw new Error(error.message || 'Failed to clear completed items.');
